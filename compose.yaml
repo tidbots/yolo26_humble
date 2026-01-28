@@ -1,1 +1,54 @@
+services:
+  yolo26_ros2:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: yolo26_ros2
+    network_mode: host        # DDSが絡むので host 推奨
+    ipc: host                 # PyTorch系で安定しやすい
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    # GPUを使うなら有効（CPUだけなら消してOK）
+    gpus: all
+    volumes:
+      # モデルや設定をホストから差し替えやすくする
+      - ./models:/models:ro
+      - ./ros2_ws:/ros2_ws:rw
+    command: >
+      bash -lc
+      "ros2 launch yolo26_ros2 yolo26.launch.py
+       model:=/models/best.pt
+       image:=/camera/image_raw
+       detections:=/yolo26/detections
+       debug_image:=/yolo26/debug_image
+       classes_yaml:=/models/classes.yaml
+       device:=0
+       conf:=0.25
+       iou:=0.45
+       rate:=15.0
+       publish_debug:=true
+       transport:=raw"
+
+  # オプション：USBカメラを同じcomposeで立てたい場合
+  v4l2_camera:
+    image: ros:humble-ros-base-jammy
+    container_name: v4l2_camera
+    network_mode: host
+    privileged: true
+    devices:
+      - /dev/video0:/dev/video0
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    command: >
+      bash -lc
+      "apt-get update && apt-get install -y --no-install-recommends ros-humble-v4l2-camera &&
+       source /opt/ros/humble/setup.bash &&
+       ros2 run v4l2_camera v4l2_camera_node --ros-args
+         -p video_device:=/dev/video0
+         -p image_size:=[640,480]
+         -p pixel_format:=mjpeg
+         -r image_raw:=/camera/image_raw"
+    profiles: ["webcam"]
 
