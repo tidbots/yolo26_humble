@@ -9,7 +9,7 @@ docker compose build
 起動コマンド
 ## 1) YOLOノードだけ起動（GPU想定）
 ```
-docker compose -f compose.yaml up --build yolo26_ros2
+docker compose -f compose.yaml --profile yolo26_ros2 up
 ```
 
 ## 2) USBカメラも一緒に起動（/dev/video0）
