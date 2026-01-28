@@ -7,20 +7,16 @@ cd
 docker compose build
 
 起動コマンド
-## 1) YOLOノードだけ起動（GPU想定）
+## 1) YOLOノードを起動（GPU想定）
 ```
 docker compose -f compose.yaml --profile yolo26_ros2 up
 ```
 
-## 2) USBカメラも一緒に起動（/dev/video0）
+## 2) USBカメラを起動（/dev/video0）
 ```
 docker compose -f compose.yaml --profile webcam up 
 ```
 
-## 3) バックグラウンド起動（-d）
-```
-docker compose -f compose.yaml --profile webcam up -d 
-```
 
 
 ## 検出結果（Detection2DArray）
