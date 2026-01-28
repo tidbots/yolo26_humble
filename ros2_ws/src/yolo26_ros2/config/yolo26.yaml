@@ -1,0 +1,23 @@
+yolo26_node:
+  ros__parameters:
+    # ---- I/O ----
+    image_topic: "/camera/image_raw"
+    detections_topic: "/yolo26/detections"
+    debug_image_topic: "/yolo26/debug_image"
+    image_transport: "raw"          # "raw" or "compressed"
+    publish_debug_image: true
+
+    # ---- Model ----
+    model_path: ""                  # /models/best.pt など
+    device: "0"                     # "0" GPU, "cpu" CPU
+    conf_thres: 0.25
+    iou_thres: 0.45
+    max_det: 300
+    half: false
+
+    # ---- Labels ----
+    classes_yaml: ""                # 0: person ... 形式 or ["person", ...]
+    use_class_names: true
+
+    # ---- Performance ----
+    process_rate_hz: 15.0           # 最新フレームをこの周期で推論
