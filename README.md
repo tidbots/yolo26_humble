@@ -43,3 +43,12 @@ rqt_image_view /yolo26/debug_image
 ## モデル・クラス名ファイルの置き場
 - /models/best.pt
 - /models/classes.yaml
+```
+cd models
+wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt
+wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s.pt
+wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26m.pt
+wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26l.pt
+wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x.pt
+```
+
