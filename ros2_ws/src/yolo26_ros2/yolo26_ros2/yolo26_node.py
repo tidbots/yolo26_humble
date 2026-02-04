@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections import deque
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -72,6 +73,11 @@ class Yolo26Node(Node):
 
         self.declare_parameter("process_rate_hz", 15.0)
 
+        # Tracking parameters
+        self.declare_parameter("enable_tracking", False)
+        self.declare_parameter("tracker", "bytetrack.yaml")
+        self.declare_parameter("smoothing_window", 15)  # frames for moving average (~1sec at 15Hz)
+
         self.image_topic: str = self.get_parameter("image_topic").get_parameter_value().string_value
         self.detections_topic: str = self.get_parameter("detections_topic").get_parameter_value().string_value
         self.debug_image_topic: str = self.get_parameter("debug_image_topic").get_parameter_value().string_value
@@ -90,6 +96,14 @@ class Yolo26Node(Node):
 
         self.process_rate_hz: float = float(self.get_parameter("process_rate_hz").value)
         self.process_period_s: float = 1.0 / max(self.process_rate_hz, 0.1)
+
+        # Tracking parameters
+        self.enable_tracking: bool = bool(self.get_parameter("enable_tracking").value)
+        self.tracker: str = self.get_parameter("tracker").get_parameter_value().string_value
+        self.smoothing_window: int = int(self.get_parameter("smoothing_window").value)
+
+        # Smoothing buffer: track_id -> deque of (cx, cy, w, h)
+        self._smoothing_buffer: Dict[int, deque] = {}
 
         self.bridge = CvBridge()
 
@@ -120,7 +134,10 @@ class Yolo26Node(Node):
         # Timer inference loop
         self.timer = self.create_timer(self.process_period_s, self._on_timer)
 
-        self.get_logger().info("yolo26_ros2 node started.")
+        tracking_info = f"tracking={self.enable_tracking}"
+        if self.enable_tracking:
+            tracking_info += f" (tracker={self.tracker}, smoothing={self.smoothing_window} frames)"
+        self.get_logger().info(f"yolo26_ros2 node started. {tracking_info}")
 
     def _load_model(self, model_path: str):
         if not model_path:
@@ -215,20 +232,54 @@ class Yolo26Node(Node):
             return self.class_map[cls_id]
         return str(cls_id)
 
+    def _smooth_bbox(self, track_id: int, cx: float, cy: float, w: float, h: float) -> Tuple[float, float, float, float]:
+        """Apply moving average smoothing to bounding box coordinates."""
+        if track_id not in self._smoothing_buffer:
+            self._smoothing_buffer[track_id] = deque(maxlen=self.smoothing_window)
+
+        self._smoothing_buffer[track_id].append((cx, cy, w, h))
+
+        buf = self._smoothing_buffer[track_id]
+        if len(buf) == 1:
+            return cx, cy, w, h
+
+        arr = np.array(buf)
+        return float(arr[:, 0].mean()), float(arr[:, 1].mean()), float(arr[:, 2].mean()), float(arr[:, 3].mean())
+
+    def _cleanup_smoothing_buffer(self, active_ids: set) -> None:
+        """Remove stale track IDs from smoothing buffer."""
+        stale_ids = set(self._smoothing_buffer.keys()) - active_ids
+        for tid in stale_ids:
+            del self._smoothing_buffer[tid]
+
     def _infer_and_make_msgs(self, frame_bgr: np.ndarray, header: Header) -> Tuple[Optional[Detection2DArray], Optional[np.ndarray]]:
         # Ultralytics expects numpy image; BGR is OK for its internal pipeline
         try:
-            results = self.model.predict(
-                source=frame_bgr,
-                device=self.device,
-                conf=self.conf_thres,
-                iou=self.iou_thres,
-                max_det=self.max_det,
-                half=self.half,
-                verbose=False,
-            )
+            if self.enable_tracking:
+                # Use ByteTrack for tracking with persist=True
+                results = self.model.track(
+                    source=frame_bgr,
+                    device=self.device,
+                    conf=self.conf_thres,
+                    iou=self.iou_thres,
+                    max_det=self.max_det,
+                    half=self.half,
+                    verbose=False,
+                    tracker=self.tracker,
+                    persist=True,
+                )
+            else:
+                results = self.model.predict(
+                    source=frame_bgr,
+                    device=self.device,
+                    conf=self.conf_thres,
+                    iou=self.iou_thres,
+                    max_det=self.max_det,
+                    half=self.half,
+                    verbose=False,
+                )
         except Exception as e:
-            self.get_logger().warn(f"model.predict failed: {e}")
+            self.get_logger().warn(f"model inference failed: {e}")
             return None, None
 
         if not results:
@@ -258,19 +309,34 @@ class Yolo26Node(Node):
             xyxy = boxes.xyxy.cpu().numpy()  # (N,4)
             conf = boxes.conf.cpu().numpy()  # (N,)
             cls = boxes.cls.cpu().numpy().astype(int)  # (N,)
+
+            # Get track IDs if tracking is enabled
+            track_ids = None
+            if self.enable_tracking and boxes.id is not None:
+                track_ids = boxes.id.cpu().numpy().astype(int)
         except Exception as e:
             self.get_logger().warn(f"extract boxes failed: {e}")
             return det_arr, dbg_img
 
-        for (x1, y1, x2, y2), score, cid in zip(xyxy, conf, cls):
+        active_track_ids = set()
+
+        for i, ((x1, y1, x2, y2), score, cid) in enumerate(zip(xyxy, conf, cls)):
             x1f, y1f, x2f, y2f = float(x1), float(y1), float(x2), float(y2)
             w = max(0.0, x2f - x1f)
             h = max(0.0, y2f - y1f)
             cx = x1f + w / 2.0
             cy = y1f + h / 2.0
 
+            # Apply smoothing if tracking is enabled
+            track_id = -1
+            if self.enable_tracking and track_ids is not None:
+                track_id = int(track_ids[i])
+                active_track_ids.add(track_id)
+                cx, cy, w, h = self._smooth_bbox(track_id, cx, cy, w, h)
+
             det = Detection2D()
             det.header = header
+            det.id = str(track_id) if track_id >= 0 else ""
 
             bbox = BoundingBox2D()
             bbox.center = Pose2D(x=cx, y=cy, theta=0.0)
@@ -285,6 +351,10 @@ class Yolo26Node(Node):
             det.results.append(hyp)
 
             det_arr.detections.append(det)
+
+        # Cleanup stale track IDs from smoothing buffer
+        if self.enable_tracking:
+            self._cleanup_smoothing_buffer(active_track_ids)
 
         return det_arr, dbg_img
 

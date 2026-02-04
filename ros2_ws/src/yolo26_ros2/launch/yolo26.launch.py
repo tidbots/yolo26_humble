@@ -20,6 +20,10 @@ def generate_launch_description():
             DeclareLaunchArgument("rate", default_value="15.0", description="Processing rate Hz"),
             DeclareLaunchArgument("transport", default_value="raw", description="raw or compressed"),
             DeclareLaunchArgument("publish_debug", default_value="true", description="Publish debug image"),
+            # Tracking arguments
+            DeclareLaunchArgument("tracking", default_value="false", description="Enable ByteTrack tracking"),
+            DeclareLaunchArgument("tracker", default_value="bytetrack.yaml", description="Tracker config: bytetrack.yaml or botsort.yaml"),
+            DeclareLaunchArgument("smoothing", default_value="15", description="Smoothing window frames for moving average"),
             # Camera node arguments
             DeclareLaunchArgument("use_camera", default_value="false", description="Launch v4l2_camera node"),
             DeclareLaunchArgument("video_device", default_value="/dev/video0", description="Video device path"),
@@ -43,6 +47,9 @@ def generate_launch_description():
                         "process_rate_hz": LaunchConfiguration("rate"),
                         "image_transport": LaunchConfiguration("transport"),
                         "publish_debug_image": LaunchConfiguration("publish_debug"),
+                        "enable_tracking": LaunchConfiguration("tracking"),
+                        "tracker": LaunchConfiguration("tracker"),
+                        "smoothing_window": LaunchConfiguration("smoothing"),
                     }
                 ],
             ),

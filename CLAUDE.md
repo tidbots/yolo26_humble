@@ -68,6 +68,9 @@ Single ROS2 node (`Yolo26Node`) with this data flow:
 | `rate` | `15.0` | Processing rate (Hz) |
 | `transport` | `raw` | Image transport: "raw" or "compressed" |
 | `publish_debug` | `true` | Publish debug visualization |
+| `tracking` | `false` | Enable ByteTrack object tracking |
+| `tracker` | `bytetrack.yaml` | Tracker config: bytetrack.yaml or botsort.yaml |
+| `smoothing` | `15` | Moving average window (frames) for bbox smoothing |
 
 ## Docker Configuration
 
