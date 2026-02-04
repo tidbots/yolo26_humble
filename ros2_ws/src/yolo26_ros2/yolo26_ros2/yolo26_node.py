@@ -4,7 +4,8 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections import deque
+from collections import deque, Counter
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -19,6 +20,66 @@ from cv_bridge import CvBridge
 
 import yaml
 import cv2
+
+
+@dataclass
+class TrackState:
+    """State for a tracked object with smoothing and hysteresis."""
+    track_id: int
+    smoothing_window: int
+    # Bbox history: (cx, cy, w, h)
+    bbox_history: deque = field(default_factory=deque)
+    # Confidence history
+    conf_history: deque = field(default_factory=deque)
+    # Class history
+    class_history: deque = field(default_factory=deque)
+    # Hysteresis counters
+    appear_count: int = 0
+    disappear_count: int = 0
+    # Whether this track is "confirmed" (passed appear threshold)
+    confirmed: bool = False
+    # Locked class (once confirmed, use most frequent class)
+    locked_class: Optional[int] = None
+
+    def __post_init__(self):
+        self.bbox_history = deque(maxlen=self.smoothing_window)
+        self.conf_history = deque(maxlen=self.smoothing_window)
+        self.class_history = deque(maxlen=self.smoothing_window)
+
+    def update(self, cx: float, cy: float, w: float, h: float, conf: float, cls: int) -> None:
+        """Add new detection data."""
+        self.bbox_history.append((cx, cy, w, h))
+        self.conf_history.append(conf)
+        self.class_history.append(cls)
+        self.disappear_count = 0  # Reset disappear counter on detection
+
+    def get_smoothed_bbox(self) -> Tuple[float, float, float, float]:
+        """Get moving average of bbox."""
+        if len(self.bbox_history) == 0:
+            return 0.0, 0.0, 0.0, 0.0
+        arr = np.array(self.bbox_history)
+        return float(arr[:, 0].mean()), float(arr[:, 1].mean()), float(arr[:, 2].mean()), float(arr[:, 3].mean())
+
+    def get_smoothed_conf(self) -> float:
+        """Get moving average of confidence."""
+        if len(self.conf_history) == 0:
+            return 0.0
+        return float(np.mean(self.conf_history))
+
+    def get_stable_class(self) -> int:
+        """Get most frequent class (mode) or locked class if confirmed."""
+        if self.locked_class is not None:
+            return self.locked_class
+        if len(self.class_history) == 0:
+            return -1
+        counter = Counter(self.class_history)
+        return counter.most_common(1)[0][0]
+
+    def lock_class(self) -> None:
+        """Lock the class to current most frequent."""
+        if len(self.class_history) > 0:
+            counter = Counter(self.class_history)
+            self.locked_class = counter.most_common(1)[0][0]
 
 
 def load_classes_yaml(path: str) -> Optional[Dict[int, str]]:
@@ -77,6 +138,9 @@ class Yolo26Node(Node):
         self.declare_parameter("enable_tracking", False)
         self.declare_parameter("tracker", "bytetrack.yaml")
         self.declare_parameter("smoothing_window", 15)  # frames for moving average (~1sec at 15Hz)
+        # Hysteresis parameters
+        self.declare_parameter("appear_frames", 3)  # frames to confirm appearance
+        self.declare_parameter("disappear_frames", 5)  # frames to confirm disappearance
 
         self.image_topic: str = self.get_parameter("image_topic").get_parameter_value().string_value
         self.detections_topic: str = self.get_parameter("detections_topic").get_parameter_value().string_value
@@ -101,9 +165,11 @@ class Yolo26Node(Node):
         self.enable_tracking: bool = bool(self.get_parameter("enable_tracking").value)
         self.tracker: str = self.get_parameter("tracker").get_parameter_value().string_value
         self.smoothing_window: int = int(self.get_parameter("smoothing_window").value)
+        self.appear_frames: int = int(self.get_parameter("appear_frames").value)
+        self.disappear_frames: int = int(self.get_parameter("disappear_frames").value)
 
-        # Smoothing buffer: track_id -> deque of (cx, cy, w, h)
-        self._smoothing_buffer: Dict[int, deque] = {}
+        # Track states: track_id -> TrackState
+        self._track_states: Dict[int, TrackState] = {}
 
         self.bridge = CvBridge()
 
@@ -134,9 +200,9 @@ class Yolo26Node(Node):
         # Timer inference loop
         self.timer = self.create_timer(self.process_period_s, self._on_timer)
 
-        tracking_info = f"tracking={self.enable_tracking}"
+        tracking_info = f"rate={self.process_rate_hz}Hz, tracking={self.enable_tracking}"
         if self.enable_tracking:
-            tracking_info += f" (tracker={self.tracker}, smoothing={self.smoothing_window} frames)"
+            tracking_info += f" (tracker={self.tracker}, smoothing={self.smoothing_window}, appear={self.appear_frames}, disappear={self.disappear_frames})"
         self.get_logger().info(f"yolo26_ros2 node started. {tracking_info}")
 
     def _load_model(self, model_path: str):
@@ -232,25 +298,67 @@ class Yolo26Node(Node):
             return self.class_map[cls_id]
         return str(cls_id)
 
-    def _smooth_bbox(self, track_id: int, cx: float, cy: float, w: float, h: float) -> Tuple[float, float, float, float]:
-        """Apply moving average smoothing to bounding box coordinates."""
-        if track_id not in self._smoothing_buffer:
-            self._smoothing_buffer[track_id] = deque(maxlen=self.smoothing_window)
+    def _get_or_create_track(self, track_id: int) -> TrackState:
+        """Get existing track state or create new one."""
+        if track_id not in self._track_states:
+            self._track_states[track_id] = TrackState(
+                track_id=track_id,
+                smoothing_window=self.smoothing_window
+            )
+        return self._track_states[track_id]
 
-        self._smoothing_buffer[track_id].append((cx, cy, w, h))
+    def _update_track_hysteresis(self, active_ids: set) -> None:
+        """Update hysteresis counters for all tracks."""
+        stale_ids = []
+        for tid, state in self._track_states.items():
+            if tid not in active_ids:
+                # Track not detected this frame
+                state.disappear_count += 1
+                if state.disappear_count >= self.disappear_frames:
+                    stale_ids.append(tid)
+            else:
+                # Track detected - update appear counter
+                state.appear_count += 1
+                if state.appear_count >= self.appear_frames and not state.confirmed:
+                    state.confirmed = True
+                    state.lock_class()  # Lock class once confirmed
 
-        buf = self._smoothing_buffer[track_id]
-        if len(buf) == 1:
-            return cx, cy, w, h
-
-        arr = np.array(buf)
-        return float(arr[:, 0].mean()), float(arr[:, 1].mean()), float(arr[:, 2].mean()), float(arr[:, 3].mean())
-
-    def _cleanup_smoothing_buffer(self, active_ids: set) -> None:
-        """Remove stale track IDs from smoothing buffer."""
-        stale_ids = set(self._smoothing_buffer.keys()) - active_ids
+        # Remove tracks that have disappeared for too long
         for tid in stale_ids:
-            del self._smoothing_buffer[tid]
+            del self._track_states[tid]
+
+    def _draw_stabilized_detections(self, frame: np.ndarray, detections: List[Tuple]) -> np.ndarray:
+        """Draw stabilized detections on frame.
+
+        Args:
+            frame: BGR image
+            detections: List of (track_id, cx, cy, w, h, conf, class_label)
+        """
+        img = frame.copy()
+        for track_id, cx, cy, w, h, conf, class_label in detections:
+            x1 = int(cx - w / 2)
+            y1 = int(cy - h / 2)
+            x2 = int(cx + w / 2)
+            y2 = int(cy + h / 2)
+
+            # Color based on track_id
+            color = self._get_track_color(track_id)
+
+            # Draw bounding box
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+            # Label
+            label = f"ID:{track_id} {class_label} {conf:.2f}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            cv2.rectangle(img, (x1, y1 - th - 10), (x1 + tw, y1), color, -1)
+            cv2.putText(img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+        return img
+
+    def _get_track_color(self, track_id: int) -> Tuple[int, int, int]:
+        """Generate consistent color for track ID."""
+        np.random.seed(track_id * 13 + 7)
+        return tuple(int(c) for c in np.random.randint(50, 255, 3))
 
     def _infer_and_make_msgs(self, frame_bgr: np.ndarray, header: Header) -> Tuple[Optional[Detection2DArray], Optional[np.ndarray]]:
         # Ultralytics expects numpy image; BGR is OK for its internal pipeline
@@ -292,18 +400,11 @@ class Yolo26Node(Node):
         det_arr = Detection2DArray()
         det_arr.header = header
 
-        # debug image
-        dbg_img = None
-        if self.publish_debug_image:
-            try:
-                dbg_img = r0.plot()  # annotated BGR
-            except Exception:
-                dbg_img = frame_bgr
-
         # boxes
         try:
             boxes = getattr(r0, "boxes", None)
             if boxes is None:
+                dbg_img = frame_bgr if self.publish_debug_image else None
                 return det_arr, dbg_img
 
             xyxy = boxes.xyxy.cpu().numpy()  # (N,4)
@@ -316,9 +417,11 @@ class Yolo26Node(Node):
                 track_ids = boxes.id.cpu().numpy().astype(int)
         except Exception as e:
             self.get_logger().warn(f"extract boxes failed: {e}")
+            dbg_img = frame_bgr if self.publish_debug_image else None
             return det_arr, dbg_img
 
         active_track_ids = set()
+        stabilized_detections = []  # For custom debug rendering
 
         for i, ((x1, y1, x2, y2), score, cid) in enumerate(zip(xyxy, conf, cls)):
             x1f, y1f, x2f, y2f = float(x1), float(y1), float(x2), float(y2)
@@ -327,34 +430,66 @@ class Yolo26Node(Node):
             cx = x1f + w / 2.0
             cy = y1f + h / 2.0
 
-            # Apply smoothing if tracking is enabled
             track_id = -1
+            final_cx, final_cy, final_w, final_h = cx, cy, w, h
+            final_conf = float(score)
+            final_class = int(cid)
+
             if self.enable_tracking and track_ids is not None:
                 track_id = int(track_ids[i])
                 active_track_ids.add(track_id)
-                cx, cy, w, h = self._smooth_bbox(track_id, cx, cy, w, h)
+
+                # Get or create track state
+                state = self._get_or_create_track(track_id)
+                state.update(cx, cy, w, h, float(score), int(cid))
+
+                # Apply smoothing
+                final_cx, final_cy, final_w, final_h = state.get_smoothed_bbox()
+                final_conf = state.get_smoothed_conf()
+                final_class = state.get_stable_class()
+
+                # Skip if not yet confirmed (hysteresis)
+                if not state.confirmed:
+                    continue
 
             det = Detection2D()
             det.header = header
             det.id = str(track_id) if track_id >= 0 else ""
 
             bbox = BoundingBox2D()
-            bbox.center = Pose2D(x=cx, y=cy, theta=0.0)
-            bbox.size_x = w
-            bbox.size_y = h
+            bbox.center = Pose2D(x=final_cx, y=final_cy, theta=0.0)
+            bbox.size_x = final_w
+            bbox.size_y = final_h
             det.bbox = bbox
 
             hyp = ObjectHypothesisWithPose()
-            hyp.hypothesis.class_id = self._class_id_to_label(int(cid))
-            hyp.hypothesis.score = float(score)
-            # poseは不明なのでデフォルト（0）でOK
+            hyp.hypothesis.class_id = self._class_id_to_label(final_class)
+            hyp.hypothesis.score = final_conf
             det.results.append(hyp)
 
             det_arr.detections.append(det)
 
-        # Cleanup stale track IDs from smoothing buffer
+            # Store for debug rendering
+            if self.publish_debug_image:
+                class_label = self._class_id_to_label(final_class)
+                stabilized_detections.append((track_id, final_cx, final_cy, final_w, final_h, final_conf, class_label))
+
+        # Update hysteresis for all tracks
         if self.enable_tracking:
-            self._cleanup_smoothing_buffer(active_track_ids)
+            self._update_track_hysteresis(active_track_ids)
+
+        # Debug image
+        dbg_img = None
+        if self.publish_debug_image:
+            if self.enable_tracking:
+                # Use custom stabilized rendering
+                dbg_img = self._draw_stabilized_detections(frame_bgr, stabilized_detections)
+            else:
+                # Use ultralytics default rendering
+                try:
+                    dbg_img = r0.plot()
+                except Exception:
+                    dbg_img = frame_bgr
 
         return det_arr, dbg_img
 

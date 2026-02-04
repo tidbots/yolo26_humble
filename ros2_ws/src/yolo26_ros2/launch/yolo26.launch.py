@@ -24,6 +24,8 @@ def generate_launch_description():
             DeclareLaunchArgument("tracking", default_value="false", description="Enable ByteTrack tracking"),
             DeclareLaunchArgument("tracker", default_value="bytetrack.yaml", description="Tracker config: bytetrack.yaml or botsort.yaml"),
             DeclareLaunchArgument("smoothing", default_value="15", description="Smoothing window frames for moving average"),
+            DeclareLaunchArgument("appear_frames", default_value="3", description="Frames to confirm appearance"),
+            DeclareLaunchArgument("disappear_frames", default_value="5", description="Frames to confirm disappearance"),
             # Camera node arguments
             DeclareLaunchArgument("use_camera", default_value="false", description="Launch v4l2_camera node"),
             DeclareLaunchArgument("video_device", default_value="/dev/video0", description="Video device path"),
@@ -50,6 +52,8 @@ def generate_launch_description():
                         "enable_tracking": LaunchConfiguration("tracking"),
                         "tracker": LaunchConfiguration("tracker"),
                         "smoothing_window": LaunchConfiguration("smoothing"),
+                        "appear_frames": LaunchConfiguration("appear_frames"),
+                        "disappear_frames": LaunchConfiguration("disappear_frames"),
                     }
                 ],
             ),
