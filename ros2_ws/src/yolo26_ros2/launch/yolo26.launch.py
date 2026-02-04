@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -7,6 +8,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription(
         [
+            # YOLO node arguments
             DeclareLaunchArgument("model", default_value="", description="Path to YOLO26 weights (.pt)"),
             DeclareLaunchArgument("image", default_value="/camera/image_raw", description="Input image topic"),
             DeclareLaunchArgument("detections", default_value="/yolo26/detections", description="Output detections topic"),
@@ -18,6 +20,11 @@ def generate_launch_description():
             DeclareLaunchArgument("rate", default_value="15.0", description="Processing rate Hz"),
             DeclareLaunchArgument("transport", default_value="raw", description="raw or compressed"),
             DeclareLaunchArgument("publish_debug", default_value="true", description="Publish debug image"),
+            # Camera node arguments
+            DeclareLaunchArgument("use_camera", default_value="false", description="Launch v4l2_camera node"),
+            DeclareLaunchArgument("video_device", default_value="/dev/video0", description="Video device path"),
+            DeclareLaunchArgument("pixel_format", default_value="YUYV", description="Camera pixel format"),
+            # YOLO node
             Node(
                 package="yolo26_ros2",
                 executable="yolo26_node",
@@ -37,6 +44,24 @@ def generate_launch_description():
                         "image_transport": LaunchConfiguration("transport"),
                         "publish_debug_image": LaunchConfiguration("publish_debug"),
                     }
+                ],
+            ),
+            # v4l2_camera node (optional)
+            Node(
+                condition=IfCondition(LaunchConfiguration("use_camera")),
+                package="v4l2_camera",
+                executable="v4l2_camera_node",
+                name="v4l2_camera_node",
+                output="screen",
+                parameters=[
+                    {
+                        "video_device": LaunchConfiguration("video_device"),
+                        "image_size": [640, 480],
+                        "pixel_format": LaunchConfiguration("pixel_format"),
+                    }
+                ],
+                remappings=[
+                    ("image_raw", LaunchConfiguration("image")),
                 ],
             ),
         ]
