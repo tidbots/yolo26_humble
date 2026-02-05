@@ -1,54 +1,59 @@
+x-yolo-common: &yolo-common
+  build:
+    context: .
+    dockerfile: ./Dockerfile
+  network_mode: host        # DDSが絡むので host 推奨
+  ipc: host                 # PyTorch系で安定しやすい
+  environment:
+    - ROS_DOMAIN_ID=0
+    - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    - FASTRTPS_DEFAULT_PROFILES_FILE=/scripts/fastrtps_profile.xml
+    - DISPLAY=${DISPLAY}
+    - QT_X11_NO_MITSHM=1
+    - QT_GRAPHICSSYSTEM=native
+  # GPUを使うなら有効（CPUだけなら消してOK）
+  gpus: all
+  volumes:
+    # モデルや設定をホストから差し替えやすくする
+    - ./models:/models:ro
+    - ./ros2_ws:/ros2_ws:rw
+    - ./scripts:/scripts:ro
+    # X11 display forwarding
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    - ${HOME}/.Xauthority:/root/.Xauthority:ro
+
 services:
+  # YOLO detection (tracking無効、15Hz)
   yolo26_ros2:
-    build:
-      context: .
-      dockerfile: ./Dockerfile
+    <<: *yolo-common
     container_name: yolo26_ros2
-    network_mode: host        # DDSが絡むので host 推奨
-    ipc: host                 # PyTorch系で安定しやすい
-    environment:
-      - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-    # GPUを使うなら有効（CPUだけなら消してOK）
-    gpus: all
-    volumes:
-      # モデルや設定をホストから差し替えやすくする
-      - ./models:/models:ro
-      - ./ros2_ws:/ros2_ws:rw
-    command: >
-      bash -lc
-      "ros2 launch yolo26_ros2 yolo26.launch.py
-       model:=/models/best.pt
-       image:=/camera/image_raw
-       detections:=/yolo26/detections
-       debug_image:=/yolo26/debug_image
-       classes_yaml:=/models/classes.yaml
-       device:=0
-       conf:=0.25
-       iou:=0.45
-       rate:=15.0
-       publish_debug:=true
-       transport:=raw"
+    command: bash -lc "cd /ros2_ws && ([ -d install ] || colcon build --symlink-install) && source install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt image:=/camera/image_raw detections:=/yolo26/detections debug_image:=/yolo26/debug_image classes_yaml:=/models/classes.yaml device:=0 conf:=0.25 iou:=0.45 rate:=15.0 publish_debug:=true cv_debug_window:=true transport:=raw tracking:=false"
+    profiles: ["yolo"]
+
+  # YOLO detection with tracking (ByteTrack、30Hz)
+  yolo26_ros2_tracking:
+    <<: *yolo-common
+    container_name: yolo26_ros2
+    command: bash -lc "cd /ros2_ws && ([ -d install ] || colcon build --symlink-install) && source install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt image:=/camera/image_raw detections:=/yolo26/detections debug_image:=/yolo26/debug_image classes_yaml:=/models/classes.yaml device:=0 conf:=0.25 iou:=0.45 rate:=30.0 publish_debug:=true cv_debug_window:=true transport:=raw tracking:=true"
+    profiles: ["yolo-tracking"]
 
   # オプション：USBカメラを同じcomposeで立てたい場合
   v4l2_camera:
-    image: ros:humble-ros-base-jammy
+    build:
+      context: .
+      dockerfile: ./Dockerfile.webcam
     container_name: v4l2_camera
     network_mode: host
+    ipc: host
     privileged: true
     devices:
       - /dev/video0:/dev/video0
+    volumes:
+      - ./scripts:/scripts:ro
     environment:
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-    command: >
-      bash -lc
-      "apt-get update && apt-get install -y --no-install-recommends ros-humble-v4l2-camera &&
-       source /opt/ros/humble/setup.bash &&
-       ros2 run v4l2_camera v4l2_camera_node --ros-args
-         -p video_device:=/dev/video0
-         -p image_size:=[640,480]
-         -p pixel_format:=mjpeg
-         -r image_raw:=/camera/image_raw"
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/scripts/fastrtps_profile.xml
+    command: bash -lc "source /opt/ros/humble/setup.bash && python3 /scripts/webcam_node.py"
     profiles: ["webcam"]
 

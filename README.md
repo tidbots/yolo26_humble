@@ -1,103 +1,110 @@
 # yolo26_humble
 
-ROS2 Humble package for YOLO26 object detection with ByteTrack tracking and detection stabilization.
+ROS2 Humble用のYOLO26物体検出パッケージ。ByteTrackトラッキングと検出安定化機能付き。
 
-## Features
+## 機能
 
-- YOLO26 object detection (Ultralytics)
-- ByteTrack / BoTSORT object tracking
-- Detection stabilization:
-  - Bounding box smoothing (moving average)
-  - Confidence smoothing
-  - Class prediction stabilization (mode lock)
-  - Hysteresis (appear/disappear thresholds)
-- Docker containerized (GPU support)
-- Webcam input support (v4l2_camera)
+- YOLO26物体検出（Ultralytics）
+- ByteTrack / BoTSORT オブジェクトトラッキング
+- 検出安定化:
+  - バウンディングボックス平滑化（移動平均）
+  - 信頼度平滑化
+  - クラス予測安定化（モードロック）
+  - ヒステリシス（出現/消失閾値）
+- OpenCVデバッグウィンドウ表示
+- Docker コンテナ化（GPU対応）
+- Webカメラ入力対応（OpenCV + V4L2）
 
-## Quick Start
+## クイックスタート
 
 ```bash
 git clone https://github.com/tidbots/yolo26_humble.git
 cd yolo26_humble
-docker compose build
+
+# Dockerイメージをビルド
+docker compose -f compose.yaml --profile webcam --profile yolo --profile yolo-tracking build
+
+# X11アクセスを許可（OpenCVデバッグウィンドウ用）
+xhost +local:docker
+
+# webcam + YOLO起動（トラッキング無効、15Hz）
+docker compose -f compose.yaml --profile webcam --profile yolo up
+
+# トラッキング有効で起動（ByteTrack、30Hz）
+docker compose -f compose.yaml --profile webcam --profile yolo-tracking up
 ```
 
-## Usage
+## Dockerプロファイル
 
-### 1) Start YOLO node (GPU)
+| プロファイル | 説明 |
+|-------------|------|
+| `webcam` | USBカメラノード（OpenCV + V4L2） |
+| `yolo` | YOLO検出（トラッキング無効、15Hz） |
+| `yolo-tracking` | YOLO検出 + ByteTrack（30Hz） |
+
+## 起動パラメータ
+
+| パラメータ | デフォルト | 説明 |
+|-----------|-----------|------|
+| `model` | 必須 | YOLOの.ptウェイトファイルパス |
+| `image` | `/camera/image_raw` | 入力画像トピック |
+| `detections` | `/yolo26/detections` | 出力検出トピック |
+| `device` | `0` | GPUデバイスID または "cpu" |
+| `conf` | `0.25` | 信頼度閾値 |
+| `iou` | `0.45` | IoU閾値 |
+| `rate` | `15.0` | 処理レート（Hz） |
+| `transport` | `raw` | 画像トランスポート: "raw" or "compressed" |
+| `publish_debug` | `true` | デバッグ画像をトピックに配信 |
+| `cv_debug_window` | `true` | OpenCVデバッグウィンドウ表示（X11必要） |
+| `tracking` | `false` | ByteTrackトラッキング有効化 |
+| `tracker` | `bytetrack.yaml` | トラッカー: bytetrack.yaml or botsort.yaml |
+| `smoothing` | `15` | 移動平均ウィンドウ（フレーム数） |
+| `appear_frames` | `3` | 出現確認フレーム数 |
+| `disappear_frames` | `5` | 消失確認フレーム数 |
+
+## カスタムパラメータで実行
+
 ```bash
-docker compose -f compose.yaml --profile yolo up
+# トラッキング有効、30Hzで実行（コンテナに入らずに）
+docker exec yolo26_ros2 bash -lc "source /ros2_ws/install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt tracking:=true rate:=30.0"
+
+# バックグラウンドで実行
+docker exec -d yolo26_ros2 bash -lc "source /ros2_ws/install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt tracking:=true rate:=30.0"
+
+# 信頼度閾値を変更
+docker exec yolo26_ros2 bash -lc "source /ros2_ws/install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt conf:=0.5"
 ```
 
-### 2) Start USB webcam (/dev/video0)
-```bash
-docker compose -f compose.yaml --profile webcam up
-```
+## モニタリング
 
-### 3) With tracking enabled (recommended)
-```bash
-# Inside container or modify compose.yaml
-ros2 launch yolo26_ros2 yolo26.launch.py \
-  model:=/models/best.pt \
-  tracking:=true \
-  rate:=30.0
-```
+### 検出結果（Detection2DArray）
 
-## Launch Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `model` | required | Path to YOLO .pt weights |
-| `image` | `/camera/image_raw` | Input image topic |
-| `detections` | `/yolo26/detections` | Output detections topic |
-| `device` | `0` | GPU device ID or "cpu" |
-| `conf` | `0.25` | Confidence threshold |
-| `iou` | `0.45` | IoU threshold |
-| `rate` | `15.0` | Processing rate (Hz) |
-| `transport` | `raw` | Image transport: "raw" or "compressed" |
-| `publish_debug` | `true` | Publish debug visualization |
-| `tracking` | `false` | Enable ByteTrack object tracking |
-| `tracker` | `bytetrack.yaml` | Tracker: bytetrack.yaml or botsort.yaml |
-| `smoothing` | `15` | Moving average window (frames) |
-| `appear_frames` | `3` | Frames to confirm appearance |
-| `disappear_frames` | `5` | Frames to confirm disappearance |
-
-### Camera Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `use_camera` | `false` | Launch v4l2_camera node |
-| `video_device` | `/dev/video0` | Video device path |
-| `pixel_format` | `YUYV` | Camera pixel format |
-
-## Monitoring
-
-### Detection results (Detection2DArray)
-
-Host side (if ROS2 installed):
+ホスト側（ROS2インストール済みの場合）:
 ```bash
 ros2 topic echo /yolo26/detections
 ```
 
-From container:
+コンテナから:
 ```bash
 docker exec -it yolo26_ros2 bash -lc "ros2 topic echo /yolo26/detections"
 ```
 
-### Debug image (rqt)
+### デバッグ画像
 
-Host side:
+`cv_debug_window:=true`の場合、OpenCVデバッグウィンドウ「YOLO26 Debug」が自動で開きます。
+
+または rqt_image_view を使用:
 ```bash
 rqt_image_view /yolo26/debug_image
 ```
 
-## Model Files
+## モデルファイル
 
-Place models in `/models/`:
-- `/models/best.pt` - YOLO weights
-- `/models/classes.yaml` - Class names (optional)
+`/models/`に配置:
+- `/models/best.pt` - YOLOウェイト
+- `/models/classes.yaml` - クラス名（オプション）
 
-Download pre-trained models:
+事前学習モデルのダウンロード:
 ```bash
 cd models
 wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt
@@ -107,20 +114,20 @@ wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26l.pt
 wget https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x.pt
 ```
 
-## Detection Stabilization
+## 検出安定化
 
-When `tracking:=true`, the following stabilization is applied:
+`tracking:=true`の場合、以下の安定化が適用されます:
 
-1. **Bounding Box Smoothing**: Moving average over `smoothing` frames
-2. **Confidence Smoothing**: Moving average of detection scores
-3. **Class Lock**: After track confirmation, class is locked to most frequent
-4. **Hysteresis**:
-   - New tracks require `appear_frames` consecutive detections
-   - Lost tracks persist for `disappear_frames` before removal
+1. **バウンディングボックス平滑化**: `smoothing`フレームの移動平均
+2. **信頼度平滑化**: 検出スコアの移動平均
+3. **クラスロック**: トラック確認後、最頻クラスにロック
+4. **ヒステリシス**:
+   - 新規トラックは`appear_frames`連続検出で確認
+   - 消失トラックは`disappear_frames`後に削除
 
-This reduces flickering caused by lighting changes and temporary detection failures.
+これにより、照明変化や一時的な検出失敗によるちらつきが軽減されます。
 
-## Architecture
+## アーキテクチャ
 
 ```
 /camera/image_raw → [Subscription] → [Frame Buffer] → [Timer Loop]
@@ -135,6 +142,6 @@ This reduces flickering caused by lighting changes and temporary detection failu
                                     /yolo26/debug_image (annotated Image)
 ```
 
-## License
+## ライセンス
 
 MIT

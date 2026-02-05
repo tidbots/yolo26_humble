@@ -9,17 +9,35 @@ ROS2 Humble package for YOLO26 object detection. Uses Ultralytics YOLO for infer
 ## Build & Run Commands
 
 ```bash
-# Build Docker image
-docker compose build
+# Build Docker images (with profiles)
+docker compose -f compose.yaml --profile webcam --profile yolo --profile yolo-tracking build
 
-# Start YOLO detection node (GPU)
-docker compose -f compose.yaml --profile yolo26_ros2 up
+# Start webcam + YOLO (tracking無効、15Hz)
+xhost +local:docker  # Allow X11 access for OpenCV debug window
+docker compose -f compose.yaml --profile webcam --profile yolo up
 
-# Start USB webcam (separate terminal)
+# Start webcam + YOLO with tracking (ByteTrack、30Hz)
+xhost +local:docker
+docker compose -f compose.yaml --profile webcam --profile yolo-tracking up
+
+# Start USB webcam only
 docker compose -f compose.yaml --profile webcam up
 
 # Build ROS2 workspace inside container
 source /opt/ros/humble/setup.bash && colcon build --symlink-install
+```
+
+## Running with Custom Parameters
+
+```bash
+# Run YOLO with tracking enabled at 30Hz (without entering container)
+docker exec yolo26_ros2 bash -lc "source /ros2_ws/install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt tracking:=true rate:=30.0"
+
+# Run in background
+docker exec -d yolo26_ros2 bash -lc "source /ros2_ws/install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt tracking:=true rate:=30.0"
+
+# Custom confidence threshold
+docker exec yolo26_ros2 bash -lc "source /ros2_ws/install/setup.bash && ros2 launch yolo26_ros2 yolo26.launch.py model:=/models/best.pt conf:=0.5"
 ```
 
 ## Monitoring & Debug
@@ -31,9 +49,12 @@ ros2 topic echo /yolo26/detections
 # From container
 docker exec -it yolo26_ros2 bash -lc "ros2 topic echo /yolo26/detections"
 
-# View debug image with bounding boxes
+# View debug image with bounding boxes (OpenCV window auto-opens when cv_debug_window:=true)
+# Or use rqt_image_view:
 rqt_image_view /yolo26/debug_image
 ```
+
+**OpenCV Debug Window:** When `cv_debug_window:=true` (default), an OpenCV window "YOLO26 Debug" displays detection results directly. Requires `xhost +local:docker` before starting containers.
 
 ## Architecture
 
@@ -54,6 +75,7 @@ Single ROS2 node (`Yolo26Node`) with this data flow:
 - `ros2_ws/src/yolo26_ros2/config/yolo26.yaml` - Default configuration
 - `models/classes.yaml` - Object class definitions
 - `compose.yaml` - Docker compose with service profiles
+- `scripts/webcam_node.py` - OpenCV-based webcam publisher node
 
 ## Launch Parameters
 
@@ -67,7 +89,8 @@ Single ROS2 node (`Yolo26Node`) with this data flow:
 | `iou` | `0.45` | IoU threshold |
 | `rate` | `15.0` | Processing rate (Hz) |
 | `transport` | `raw` | Image transport: "raw" or "compressed" |
-| `publish_debug` | `true` | Publish debug visualization |
+| `publish_debug` | `true` | Publish debug visualization to topic |
+| `cv_debug_window` | `true` | Show OpenCV debug window (requires X11) |
 | `tracking` | `false` | Enable ByteTrack object tracking |
 | `tracker` | `bytetrack.yaml` | Tracker config: bytetrack.yaml or botsort.yaml |
 | `smoothing` | `15` | Moving average window (frames) for bbox/conf smoothing |
@@ -79,7 +102,9 @@ Single ROS2 node (`Yolo26Node`) with this data flow:
 - **Base image:** `ros:humble-ros-base-jammy`
 - **GPU:** Enabled via `gpus: all`
 - **Network:** Host mode (required for ROS2 DDS)
-- **Profiles:** `yolo26_ros2` (detection), `webcam` (v4l2_camera)
+- **IPC:** Host mode (required for DDS shared memory transport between containers)
+- **X11 Forwarding:** Enabled for OpenCV debug window (`DISPLAY`, `/tmp/.X11-unix`)
+- **Profiles:** `yolo` (detection 15Hz), `yolo-tracking` (ByteTrack 30Hz), `webcam` (OpenCV camera node)
 
 ## Dependencies
 

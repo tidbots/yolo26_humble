@@ -20,6 +20,7 @@ def generate_launch_description():
             DeclareLaunchArgument("rate", default_value="15.0", description="Processing rate Hz"),
             DeclareLaunchArgument("transport", default_value="raw", description="raw or compressed"),
             DeclareLaunchArgument("publish_debug", default_value="true", description="Publish debug image"),
+            DeclareLaunchArgument("cv_debug_window", default_value="true", description="Show OpenCV debug window"),
             # Tracking arguments
             DeclareLaunchArgument("tracking", default_value="false", description="Enable ByteTrack tracking"),
             DeclareLaunchArgument("tracker", default_value="bytetrack.yaml", description="Tracker config: bytetrack.yaml or botsort.yaml"),
@@ -49,6 +50,7 @@ def generate_launch_description():
                         "process_rate_hz": LaunchConfiguration("rate"),
                         "image_transport": LaunchConfiguration("transport"),
                         "publish_debug_image": LaunchConfiguration("publish_debug"),
+                        "cv_debug_window": LaunchConfiguration("cv_debug_window"),
                         "enable_tracking": LaunchConfiguration("tracking"),
                         "tracker": LaunchConfiguration("tracker"),
                         "smoothing_window": LaunchConfiguration("smoothing"),

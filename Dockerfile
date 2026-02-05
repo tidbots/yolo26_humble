@@ -16,8 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Python deps ---
-# YOLO26 を Ultralytics 系で動かす想定（既存スクリプトに合わせて必要ならここを調整）
-RUN pip3 install --no-cache-dir ultralytics
+# YOLO26 を Ultralytics 系で動かす想定
+# numpy<2 for cv_bridge compatibility, lap for ByteTrack tracking
+RUN pip3 install --no-cache-dir 'numpy<2' ultralytics lap
 
 # --- Workspace ---
 WORKDIR /ros2_ws

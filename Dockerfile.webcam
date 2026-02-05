@@ -1,0 +1,8 @@
+FROM ros:humble-ros-base-jammy
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-opencv \
+    && rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]

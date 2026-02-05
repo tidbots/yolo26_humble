@@ -11,11 +11,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from sensor_msgs.msg import Image, CompressedImage
 from std_msgs.msg import Header
-from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose, BoundingBox2D
-from geometry_msgs.msg import Pose2D
+from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose, BoundingBox2D, Pose2D, Point2D
 from cv_bridge import CvBridge
 
 import yaml
@@ -121,9 +121,11 @@ class Yolo26Node(Node):
         self.declare_parameter("debug_image_topic", "/yolo26/debug_image")
         self.declare_parameter("image_transport", "raw")  # raw / compressed
         self.declare_parameter("publish_debug_image", True)
+        self.declare_parameter("cv_debug_window", True)  # OpenCV imshow window
 
         self.declare_parameter("model_path", "")
-        self.declare_parameter("device", "0")
+        from rcl_interfaces.msg import ParameterDescriptor
+        self.declare_parameter("device", "0", ParameterDescriptor(dynamic_typing=True))
         self.declare_parameter("conf_thres", 0.25)
         self.declare_parameter("iou_thres", 0.45)
         self.declare_parameter("max_det", 300)
@@ -147,9 +149,12 @@ class Yolo26Node(Node):
         self.debug_image_topic: str = self.get_parameter("debug_image_topic").get_parameter_value().string_value
         self.image_transport: str = self.get_parameter("image_transport").get_parameter_value().string_value
         self.publish_debug_image: bool = self.get_parameter("publish_debug_image").get_parameter_value().bool_value
+        self.cv_debug_window: bool = self.get_parameter("cv_debug_window").get_parameter_value().bool_value
 
         self.model_path: str = self.get_parameter("model_path").get_parameter_value().string_value
-        self.device: str = self.get_parameter("device").get_parameter_value().string_value
+        # device can be passed as int or string
+        device_param = self.get_parameter("device").value
+        self.device: str = str(device_param) if device_param is not None else "0"
         self.conf_thres: float = float(self.get_parameter("conf_thres").value)
         self.iou_thres: float = float(self.get_parameter("iou_thres").value)
         self.max_det: int = int(self.get_parameter("max_det").value)
@@ -181,20 +186,20 @@ class Yolo26Node(Node):
 
         # ---- pubs/subs ----
         self.pub_det = self.create_publisher(Detection2DArray, self.detections_topic, 10)
-        self.pub_dbg = self.create_publisher(Image, self.debug_image_topic, 10) if self.publish_debug_image else None
+        self.pub_dbg = self.create_publisher(Image, self.debug_image_topic, qos_profile_sensor_data) if self.publish_debug_image else None
 
         self._lock = threading.Lock()
         self._latest_frame: Optional[np.ndarray] = None
         self._latest_header: Optional[Header] = None
         self._last_infer_ts = 0.0
 
-        # Subscribe raw or compressed
+        # Subscribe raw or compressed (use sensor_data QoS for image topics)
         if self.image_transport.lower() == "compressed":
             topic = self.image_topic.rstrip("/") + "/compressed"
-            self.sub_img = self.create_subscription(CompressedImage, topic, self._cb_compressed, 10)
+            self.sub_img = self.create_subscription(CompressedImage, topic, self._cb_compressed, qos_profile_sensor_data)
             self.get_logger().info(f"Subscribe: {topic} (sensor_msgs/CompressedImage)")
         else:
-            self.sub_img = self.create_subscription(Image, self.image_topic, self._cb_raw, 10)
+            self.sub_img = self.create_subscription(Image, self.image_topic, self._cb_raw, qos_profile_sensor_data)
             self.get_logger().info(f"Subscribe: {self.image_topic} (sensor_msgs/Image)")
 
         # Timer inference loop
@@ -289,9 +294,15 @@ class Yolo26Node(Node):
             self.pub_det.publish(det_msg)
         if self.pub_dbg is not None and dbg_img is not None:
             try:
-                self.pub_dbg.publish(self.bridge.cv2_to_imgmsg(dbg_img, encoding="bgr8"))
+                # Convert BGR to RGB for better compatibility with rqt_image_view
+                dbg_rgb = cv2.cvtColor(dbg_img, cv2.COLOR_BGR2RGB)
+                self.pub_dbg.publish(self.bridge.cv2_to_imgmsg(dbg_rgb, encoding="rgb8"))
             except Exception as e:
                 self.get_logger().warn(f"publish debug image failed: {e}")
+        # OpenCV debug window display
+        if self.cv_debug_window and dbg_img is not None:
+            cv2.imshow("YOLO26 Debug", dbg_img)
+            cv2.waitKey(1)
 
     def _class_id_to_label(self, cls_id: int) -> str:
         if self.use_class_names and self.class_map and cls_id in self.class_map:
@@ -457,7 +468,9 @@ class Yolo26Node(Node):
             det.id = str(track_id) if track_id >= 0 else ""
 
             bbox = BoundingBox2D()
-            bbox.center = Pose2D(x=final_cx, y=final_cy, theta=0.0)
+            bbox.center.position.x = final_cx
+            bbox.center.position.y = final_cy
+            bbox.center.theta = 0.0
             bbox.size_x = final_w
             bbox.size_y = final_h
             det.bbox = bbox
@@ -502,6 +515,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
 
